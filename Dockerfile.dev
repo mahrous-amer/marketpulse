@@ -1,0 +1,23 @@
+FROM golang:latest AS dev
+
+RUN apt-get update && apt-get install -y \
+    git \
+    make \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /marketpulse
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+
+RUN go install golang.org/x/tools/gopls@latest
+RUN go install github.com/air-verse/air@latest
+
+VOLUME ["/marketpulse"]
+
+CMD ["bash"]
+
+# docker run --rm -it -v $(pwd):/marketpulse -e ALPHA_VANTAGE_API_KEY=your_api_key marketpulse
