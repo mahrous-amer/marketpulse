@@ -3,66 +3,116 @@ package cmd
 import (
     "fmt"
     "os"
-    "reflect"
-    "text/tabwriter" // Import tabwriter for table formatting
-    "github.com/fatih/color"
+    "text/tabwriter"
+    "sort"
     "github.com/spf13/cobra"
-    "marketpulse/api" // Import your API package
+    "marketpulse/api"
+    "marketpulse/logger"
 )
 
 // fetchCmd represents the fetch command
 var fetchCmd = &cobra.Command{
-    Use:   "fetch",
+    Use:   "fetch [symbol]",
     Short: "Fetches market data for a specified symbol",
     Long:  `Fetches real-time financial data for the given stock symbol from Alpha Vantage and prints the results.`,
     Args:  cobra.ExactArgs(1),
     Run: func(cmd *cobra.Command, args []string) {
         symbol := args[0]
 
-        // Get API key from flag
-        apiKey, _ := cmd.Flags().GetString("api-key")
-        if apiKey == "" {
-            // Try to get API key from environment variable if not provided via flag
-            apiKey = os.Getenv("ALPHA_VANTAGE_API_KEY")
-        }
-        if apiKey == "" {
-            color.Red("API key is required. Please provide it using the --api-key flag or the ALPHA_VANTAGE_API_KEY environment variable.")
+        // Load configuration (can come from env, file, or defaults)
+        if err := api.LoadConfig(); err != nil {
+            logger.Error(fmt.Sprintf("Error loading configuration: %v", err))
             return
+        }
+
+        apiKey, _ := cmd.Flags().GetString("api-key")
+
+        // Get the API key from config (environment or config file)
+        if apiKey == "" {
+            apiKey = api.GetAPIKey()
+            if apiKey == "" {
+                logger.Error("API key is required. Please set it in the configuration or environment variables.")
+                return
+            }
         }
 
         // Fetch data
         data, err := api.FetchStockData(symbol, apiKey)
         if err != nil {
-            color.Red("Error fetching data: %v", err)
+            logger.Error(fmt.Sprintf("Error fetching data: %v", err))
             return
         }
 
-        color.Cyan("Market data for %s:", symbol)
-        // Display data in a colored format or structured manner
-        fmt.Println(data)
-                // Use reflection to handle unknown types
-        v := reflect.ValueOf(data)
-        if v.Kind() != reflect.Map {
-            color.Red("Unexpected data format")
-            return
-        }
-
-        // Create a new tab writer to format the data in a table
-        w := new(tabwriter.Writer)
-        w.Init(os.Stdout, 0, 8, 2, ' ', 0)
-
-        // Print header
-        fmt.Fprintln(w, "Key\tValue")
-        fmt.Fprintln(w, "----\t-----")
-
-        // Print data in tabular format
-       for _, key := range v.MapKeys() {
-            value := v.MapIndex(key)
-            fmt.Fprintf(w, "%v\t%v\n", key.Interface(), value.Interface())
-        }
-        // Flush the tab writer to output the formatted data
-        w.Flush()
+        logger.Info(fmt.Sprintf("Market data for %s:", symbol))
+        displayData(data)
     },
+}
+
+// displayData formats and prints the market data in a table
+func displayData(data interface{}) {
+    // Ensure the data is a map
+    dataMap, ok := data.(map[string]interface{})
+    if !ok {
+        logger.Error("Unexpected data format, expected a map.")
+        return
+    }
+
+    // Extract and format the "Time Series (5min)" data
+    timeSeriesRaw, ok := dataMap["Time Series (5min)"]
+    if !ok {
+        logger.Error("Time Series data not found.")
+        return
+    }
+
+    // Ensure the time series is a map
+    timeSeries, ok := timeSeriesRaw.(map[string]interface{})
+    if !ok {
+        logger.Error("Unexpected format for Time Series data.")
+        return
+    }
+
+    // Create a tab writer for clean table formatting
+    w := new(tabwriter.Writer)
+    w.Init(os.Stdout, 0, 8, 2, ' ', 0)
+
+    // Print header
+    fmt.Fprintln(w, "Time\tOpen\tHigh\tLow\tClose\tVolume")
+    fmt.Fprintln(w, "----\t----\t----\t---\t-----\t------")
+
+    // Get the keys (timestamps) and sort them to display data in chronological order
+    timestamps := make([]string, 0, len(timeSeries))
+    for timestamp := range timeSeries {
+        timestamps = append(timestamps, timestamp)
+    }
+    sort.Strings(timestamps)
+
+    // Loop over sorted timestamps and extract the corresponding market data
+    for _, timestamp := range timestamps {
+        recordRaw, ok := timeSeries[timestamp]
+        if !ok {
+            logger.Error(fmt.Sprintf("No data found for timestamp %s", timestamp))
+            continue
+        }
+
+        // Ensure record is a map
+        record, ok := recordRaw.(map[string]interface{})
+        if !ok {
+            logger.Error(fmt.Sprintf("Unexpected data format for record at %s", timestamp))
+            continue
+        }
+
+        open := record["1. open"]
+        high := record["2. high"]
+        low := record["3. low"]
+        close := record["4. close"]
+        volume := record["5. volume"]
+
+        // Print formatted data
+        fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", timestamp, open, high, low, close, volume)
+    }
+
+    // Flush the tab writer to output the formatted data
+    w.Flush()
 }
 
 func init() {
